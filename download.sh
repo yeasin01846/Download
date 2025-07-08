@@ -2,54 +2,38 @@
 set -e
 
 PORT=8080
-NGCONF=multidown8080
 WEBROOT=/opt/multidown/download
+NGCONF=multidown8080
+
+# IP
 DOMAIN_OR_IP=$(curl -s ifconfig.me)
 
-# Clean old configs
-sudo rm -f /etc/nginx/sites-available/$NGCONF
-sudo rm -f /etc/nginx/sites-enabled/$NGCONF
-sudo lsof -t -i :$PORT | xargs -r sudo kill -9
-
-# Dependencies
+# Prepare VPS
 sudo apt update
 sudo apt install -y nginx php-fpm php-cli php-xml php-json php-mbstring php-curl python3 python3-pip ffmpeg git unzip
 sudo pip3 install -U yt-dlp gallery-dl you-get
 
-# Create web root
+# Clean old config
+sudo rm -rf /etc/nginx/sites-{available,enabled}/$NGCONF
+sudo lsof -t -i :$PORT | xargs -r sudo kill -9
+
+# Web directory
 sudo mkdir -p $WEBROOT
 
-# index.php
+# Index PHP
 sudo tee $WEBROOT/index.php >/dev/null <<'EOPHP'
-<!DOCTYPE html>
 <html>
-<head>
-<title>Advanced Multi Downloader</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-</head>
+<head><title>Pro Downloader</title></head>
 <body>
-<form id="form">
-  URL: <input type="text" id="url"><br>
-  Engine:
-  <select id="engine">
-    <option value="yt-dlp">yt-dlp</option>
-    <option value="gallery-dl">gallery-dl</option>
-    <option value="you-get">you-get</option>
-  </select><br>
-  <button type="button" onclick="download()">Download</button>
-</form>
-<div id="result"></div>
+<input id="url" placeholder="Paste URL here" style="width:90%">
+<button onclick="dl('yt-dlp')">Download Video</button>
+<div id="results"></div>
 <script>
-function download() {
-  fetch('extract.php', {
-    method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
-    body:'url='+encodeURIComponent(url.value)+'&engine='+encodeURIComponent(engine.value)
-  }).then(res=>res.json()).then(data=>{
-    result.innerHTML = data.items.map(i=>
-      `<div><a href="download.php?u=${encodeURIComponent(i.url)}">${i.type.toUpperCase()} - Download</a></div>`
-    ).join('')
-  })
-}
+function dl(engine){
+fetch('extract.php',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'url='+encodeURIComponent(url.value)+'&engine='+engine})
+.then(r=>r.json()).then(d=>{
+results.innerHTML=d.items.map(i=>`<a href="download.php?u=${encodeURIComponent(i.url)}">DOWNLOAD ${i.type.toUpperCase()}</a>`).join('<br>')
+})}
 </script>
 </body>
 </html>
@@ -59,27 +43,23 @@ EOPHP
 sudo tee $WEBROOT/extract.php >/dev/null <<'EOPHP'
 <?php
 $url=$_POST['url'];
-$engine=$_POST['engine'];
 $cookies='/opt/multidown/cookies.txt';
 $ua='Mozilla/5.0 (Windows NT 10.0; Win64; x64)';
-$proxy=''; // set if needed e.g., 'http://proxy:port'
-
-switch($engine){
-  case 'yt-dlp':
-    exec("yt-dlp --no-playlist --dump-json --cookies '$cookies' --user-agent '$ua' --proxy '$proxy' ".escapeshellarg($url),$o);
-    $data=json_decode(join('',$o),true);
-    $items=[['type'=>'video','url'=>$data['url']??$data['formats'][0]['url']]];
-    break;
-  case 'gallery-dl':
-    exec("gallery-dl -j --cookies '$cookies' --user-agent '$ua' ".escapeshellarg($url),$o);
-    $files=json_decode(join('',$o),true)['files']??[];
-    $items=array_map(fn($f)=>['type'=>'photo','url'=>$f],$files);
-    break;
-  case 'you-get':
-    exec("you-get --json ".escapeshellarg($url),$o);
-    $streams=json_decode(join('',$o),true)['streams']??[];
-    $items=[['type'=>'video','url'=>array_values($streams)[0]['src'][0]]];
-    break;
+exec("yt-dlp --cookies $cookies --user-agent '$ua' --no-playlist -J ".escapeshellarg($url),$o);
+$data=json_decode(join('',$o),true);
+$items=[];
+if(!empty($data['formats'])){
+  foreach($data['formats'] as $f){
+    if(isset($f['url'])){
+      $items[]=['type'=>'video','url'=>$f['url']];
+      break;
+    }
+  }
+}else if(isset($data['url'])){
+  $items[]=['type'=>'video','url'=>$data['url']];
+}
+if(isset($data['thumbnails'][0]['url'])){
+  $items[]=['type'=>'photo','url'=>$data['thumbnails'][0]['url']];
 }
 echo json_encode(['items'=>$items]);
 EOPHP
@@ -88,22 +68,25 @@ EOPHP
 sudo tee $WEBROOT/download.php >/dev/null <<'EOPHP'
 <?php
 $url=$_GET['u'];
-header('Content-Disposition: attachment; filename="downloaded"');
+header('Content-Disposition: attachment; filename="downloaded.mp4"');
 readfile($url);
 EOPHP
 
-# Permissions
+# Permission
 sudo chown -R www-data:www-data $WEBROOT
 
-# Nginx
+# Nginx Config
 sudo tee /etc/nginx/sites-available/$NGCONF >/dev/null <<EOF
 server {
     listen $PORT;
     root /opt/multidown;
+    index index.php;
+
     location /download/ {
         alias $WEBROOT/;
         index index.php;
     }
+
     location ~ \.php\$ {
         include snippets/fastcgi-php.conf;
         fastcgi_pass unix:/var/run/php/php$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')-fpm.sock;
@@ -112,10 +95,12 @@ server {
 EOF
 
 sudo ln -sf /etc/nginx/sites-available/$NGCONF /etc/nginx/sites-enabled/
-sudo systemctl restart nginx php*-fpm
 
-# UFW
+# Firewall
 sudo ufw allow $PORT/tcp || true
 
+# Restart Services
+sudo systemctl restart nginx php*-fpm
+
 # Done
-echo "Done! Visit: http://$DOMAIN_OR_IP:$PORT/download"
+echo "✅ Installation complete! Open: http://$DOMAIN_OR_IP:$PORT/download"
