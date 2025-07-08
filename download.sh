@@ -2,8 +2,28 @@
 set -e
 
 PORT=8080
+NGCONF=multidown8080
 WEBROOT=/opt/multidown/download
 DOMAIN_OR_IP=$(curl -s ifconfig.me)
+
+# --- Auto clean old nginx config & port usage ---
+echo "▶ Cleaning up old nginx config for port $PORT..."
+sudo rm -f /etc/nginx/sites-available/$NGCONF
+sudo rm -f /etc/nginx/sites-enabled/$NGCONF
+for f in /etc/nginx/sites-available/*; do
+    if grep -q "listen $PORT" "$f"; then
+        name=$(basename "$f")
+        echo " -- Removing old $name (port $PORT) ..."
+        sudo rm -f "/etc/nginx/sites-available/$name"
+        sudo rm -f "/etc/nginx/sites-enabled/$name"
+    fi
+done
+if sudo lsof -i :$PORT | grep LISTEN; then
+    pid=$(sudo lsof -t -i :$PORT)
+    echo " -- Killing process on port $PORT: $pid"
+    sudo kill -9 $pid
+fi
+echo "▶ Old configs cleaned. Proceeding with new install ..."
 
 echo "▶ Installing dependencies..."
 sudo apt update
@@ -343,7 +363,7 @@ sudo chmod 644 $WEBROOT/*.php
 sudo chmod 1777 /tmp
 
 echo "▶ Creating custom nginx config for port $PORT..."
-sudo tee /etc/nginx/sites-available/multidown8080 >/dev/null <<EOF
+sudo tee /etc/nginx/sites-available/$NGCONF >/dev/null <<EOF
 server {
     listen $PORT default_server;
     root /opt/multidown;
@@ -362,7 +382,7 @@ server {
 }
 EOF
 
-sudo ln -sf /etc/nginx/sites-available/multidown8080 /etc/nginx/sites-enabled/multidown8080
+sudo ln -sf /etc/nginx/sites-available/$NGCONF /etc/nginx/sites-enabled/$NGCONF
 
 echo "▶ Enabling firewall for port $PORT..."
 sudo ufw allow $PORT/tcp || sudo iptables -I INPUT -p tcp --dport $PORT -j ACCEPT
