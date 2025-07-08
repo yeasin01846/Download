@@ -27,16 +27,8 @@ echo "▶ Old configs cleaned. Proceeding with new install ..."
 
 echo "▶ Installing dependencies..."
 sudo apt update
-sudo apt install -y nginx php-fpm php-cli php-xml php-json php-mbstring php-curl python3 python3-pip ffmpeg git unzip golang-go
+sudo apt install -y nginx php-fpm php-cli php-xml php-json php-mbstring php-curl python3 python3-pip ffmpeg git unzip
 sudo pip3 install -U yt-dlp gallery-dl you-get
-
-# Annie (Go binary)
-ANNIE_BIN=/usr/local/bin/annie
-if [ ! -f "$ANNIE_BIN" ]; then
-    echo "▶ Installing annie..."
-    wget -qO $ANNIE_BIN https://github.com/iawia002/annie/releases/download/v0.11.1/annie_linux_amd64
-    chmod +x $ANNIE_BIN
-fi
 
 echo "▶ Creating web root $WEBROOT ..."
 sudo mkdir -p $WEBROOT
@@ -87,7 +79,6 @@ let url = '';
 const engines = [
     {id:'yt-dlp', name:'yt-dlp', desc:'Ultimate Video Engine'},
     {id:'gallery-dl', name:'gallery-dl', desc:'Album/Photo Pro'},
-    {id:'annie', name:'annie', desc:'Asian/Alt Video Engine'},
     {id:'you-get', name:'you-get', desc:'Simple Video Grabber'},
     {id:'manual', name:'Manual', desc:'HTML Scraper'}
 ];
@@ -231,31 +222,6 @@ function parse_gallery_dl($data){
     return $items;
 }
 
-function parse_annie($data){
-    $items = [];
-    if(isset($data['streams']) && is_array($data['streams'])){
-        foreach($data['streams'] as $sid=>$s){
-            if(isset($s['urls']) && is_array($s['urls'])){
-                foreach($s['urls'] as $u){
-                    $items[] = [
-                        'type'=> 'video',
-                        'formats'=>[[
-                            'url'=>$u,
-                            'ext'=> $s['container'] ?? 'mp4',
-                            'res'=> (isset($s['quality'])?$s['quality']:($s['size']??'-')),
-                            'size'=> isset($s['size'])?fsize($s['size']):'-',
-                            'vcodec'=> $sid
-                        ]],
-                        'thumb'=>null,
-                        'title'=>null
-                    ];
-                }
-            }
-        }
-    }
-    return $items;
-}
-
 function parse_youget($data){
     $items = [];
     if(isset($data['streams']) && is_array($data['streams'])){
@@ -327,10 +293,6 @@ if($engine==='yt-dlp'){
     exec("gallery-dl -j ".escapeshellarg($url)." 2>/dev/null", $out, $ret);
     $data = @json_decode(is_array($out)?implode("\n",$out):$out,true);
     $items = $data?parse_gallery_dl($data):[];
-} else if($engine==='annie'){
-    exec("annie -j ".escapeshellarg($url)." 2>/dev/null", $out, $ret);
-    $data = @json_decode(is_array($out)?implode("\n",$out):$out,true);
-    $items = $data?parse_annie($data):[];
 } else if($engine==='you-get'){
     exec("you-get --json ".escapeshellarg($url)." 2>/dev/null", $out, $ret);
     $data = @json_decode(is_array($out)?implode("\n",$out):$out,true);
