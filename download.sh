@@ -1,26 +1,19 @@
 #!/bin/bash
 set -e
 
-PORT=8080
-APPNAME=superdown
-
-echo "[*] System updating & cleaning..."
+echo "[*] System updating..."
 apt update && apt upgrade -y
 
-# Remove old node/npm/nginx config
+echo "[*] Removing old node/npm/node_modules..."
 apt remove -y nodejs libnode-dev npm || true
 apt purge -y nodejs libnode-dev npm || true
 apt autoremove -y
 rm -rf /usr/include/node /usr/lib/node_modules /usr/bin/node /usr/bin/npm
 
-# Remove old nginx config if exists
-rm -f /etc/nginx/sites-enabled/$APPNAME
-rm -f /etc/nginx/sites-available/$APPNAME
-
-echo "[*] Installing essentials..."
+echo "[*] Installing essentials (nginx, php, pip, ffmpeg, unzip, git, curl, wget)..."
 apt install -y nginx php-fpm php-cli php-xml php-json php-mbstring php-curl python3 python3-pip ffmpeg git unzip curl wget
 
-echo "[*] Installing Node.js 20.x & pm2..."
+echo "[*] Installing Node.js 20.x & npm..."
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
 apt install -y nodejs
 npm install -g pm2
@@ -28,56 +21,91 @@ npm install -g pm2
 echo "[*] Installing yt-dlp, gallery-dl, you-get..."
 pip3 install -U yt-dlp gallery-dl you-get
 
-echo "[*] Deploying Node worker..."
+# --------- NodeJS API Backend Setup ----------
 mkdir -p /opt/deepworker
-cat > /opt/deepworker/deepworker.js <<'EOF'
+cd /opt/deepworker
+
+cat > deepworker.js <<'EOF'
 const express = require("express");
 const cors = require("cors");
 const { exec } = require("child_process");
+const fs = require("fs");
+
 const app = express();
 app.use(cors());
 app.use(express.json());
 const PORT = 5000;
+
+// Shell command runner
 function run(cmd) {
   return new Promise((resolve) => {
-    exec(cmd, { maxBuffer: 1024 * 1024 * 30 }, (err, stdout, stderr) => {
+    exec(cmd, { maxBuffer: 1024*1024*30 }, (err, stdout, stderr) => {
       resolve({ stdout, stderr });
     });
   });
 }
+
+// Multi-engine extract (with fallback, raw output)
 app.post("/api/extract", async (req, res) => {
   let { url, engine } = req.body;
   if (!url) return res.json({ error: "Missing url" });
-  let cmd = "";
-  if (engine === "yt-dlp") {
-    cmd = `yt-dlp --dump-json --no-warnings "${url}"`;
-  } else if (engine === "gallery-dl") {
-    cmd = `gallery-dl --json "${url}"`;
-  } else if (engine === "you-get") {
-    cmd = `you-get --json "${url}"`;
-  } else {
-    cmd = `yt-dlp --dump-json --no-warnings "${url}" || gallery-dl --json "${url}" || you-get --json "${url}"`;
+  let result = {}, tried = [];
+  // Helper for fallback
+  async function tryCmd(cmd, parser="json") {
+    let { stdout } = await run(cmd);
+    if (parser=="json") {
+      try { return JSON.parse(stdout.split("\n").filter(Boolean).pop()||"{}"); }
+      catch { return { raw: stdout }; }
+    }
+    return stdout;
   }
-  let { stdout } = await run(cmd);
-  let out;
-  try { out = JSON.parse(stdout.split("\n").filter(Boolean).pop() || "{}"); }
-  catch { out = { raw: stdout }; }
-  res.json(out);
+  // Ordered engine attempts
+  if (engine === "yt-dlp") result = await tryCmd(`yt-dlp --dump-json --no-warnings "${url}"`);
+  else if (engine === "gallery-dl") result = await tryCmd(`gallery-dl --json "${url}"`);
+  else if (engine === "you-get") result = await tryCmd(`you-get --json "${url}"`);
+  else {
+    // Ultimate fallback—cascade
+    result = await tryCmd(`yt-dlp --dump-json --no-warnings "${url}"`);
+    if (!result.formats && !result.url) result = await tryCmd(`gallery-dl --json "${url}"`);
+    if (!result.formats && !result.url) result = await tryCmd(`you-get --json "${url}"`);
+    if (!result.formats && !result.url) result = { raw: result.raw || "No extractable data found." };
+  }
+  res.json(result);
 });
-app.listen(PORT, () => {
-  console.log("Deepworker running on " + PORT);
+
+// Screenshot/DP Skin endpoint
+app.post("/api/screenshot", async (req, res) => {
+  const { url } = req.body;
+  if (!url) return res.json({ error: "Missing url" });
+  const puppeteer = require("puppeteer");
+  let browser, page;
+  try {
+    browser = await puppeteer.launch({ args: ["--no-sandbox"] });
+    page = await browser.newPage();
+    await page.goto(url, { waitUntil: "networkidle2", timeout: 30000 });
+    const buf = await page.screenshot({ fullPage: true });
+    await browser.close();
+    res.set("Content-Type", "image/png");
+    res.send(buf);
+  } catch (e) {
+    if (browser) await browser.close();
+    res.json({ error: "Screenshot failed: " + e });
+  }
 });
+
+app.listen(PORT, ()=>console.log("Deepworker running on " + PORT));
 EOF
 
-cd /opt/deepworker
-npm install puppeteer express cors || true
-pm2 delete deepworker || true
+npm install puppeteer express cors
+
 pm2 start deepworker.js --name deepworker
 pm2 save
 
-echo "[*] Deploying PHP frontend..."
-mkdir -p /opt/$APPNAME/download
-cat > /opt/$APPNAME/download/index.php <<'EOPHP'
+# -------- PHP Frontend Setup ---------
+mkdir -p /opt/superdown/download
+cd /opt/superdown/download
+
+cat > index.php <<'EOPHP'
 <!DOCTYPE html>
 <html lang="en"><head>
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -103,6 +131,8 @@ cat > /opt/$APPNAME/download/index.php <<'EOPHP'
   <button id="gallery-dl">gallery-dl</button>
   <button id="you-get">you-get</button>
   <button id="manual">Manual</button>
+  <button id="screenshot" style="background:#2a9d8f;color:#fff;">DP Screenshot</button>
+  <img id="screenshot-img" style="max-width:100%;margin-top:10px;display:none;">
   <div id="results"></div>
 </div>
 <script>
@@ -139,54 +169,73 @@ function fetchResults() {
       if(data.streams) out += data.streams.map(s=> `<div class="item">${s.quality||""} <a class="dlbtn" href="${s.url||s.src}" target="_blank">Download</a></div>`).join("");
       document.getElementById("results").innerHTML = out || "No video/photo found!";
     } else if(data.raw) {
-      document.getElementById("results").innerHTML = "<pre>"+data.raw+"</pre>";
+      document.getElementById("results").innerHTML = "<pre>"+(typeof data.raw==="string"?data.raw:JSON.stringify(data.raw,null,2))+"</pre>";
     } else {
       document.getElementById("results").innerHTML = "No video/photo found!";
     }
   })
   .catch(()=>document.getElementById("results").innerHTML="❌ Failed.");
 }
+// Screenshot/DP Skin
+document.getElementById("screenshot").onclick = function() {
+  let url = document.getElementById("url").value;
+  if (!url) return alert("URL দিন!");
+  document.getElementById("screenshot-img").style.display = "none";
+  fetch("/api/screenshot", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({url})
+  })
+  .then(res=>res.blob())
+  .then(blob=>{
+    let img = document.getElementById("screenshot-img");
+    img.src = URL.createObjectURL(blob);
+    img.style.display = "block";
+  })
+}
 </script>
 </body></html>
 EOPHP
 
-echo "[*] Configuring nginx on $PORT ..."
-cat > /etc/nginx/sites-available/$APPNAME <<ENGINX
+# --------- Nginx Configuration for 8080 ---------
+cat > /etc/nginx/sites-available/superdown <<'ENGINX'
 server {
-    listen $PORT;
+    listen 8080;
     server_name _;
-    root /opt/$APPNAME/download;
+    root /opt/superdown/download;
     index index.php index.html;
 
     location /download {
-        alias /opt/$APPNAME/download;
+        alias /opt/superdown/download;
         index index.php index.html;
-        try_files \$uri \$uri/ /download/index.php?\$query_string;
+        try_files $uri $uri/ /download/index.php?$query_string;
     }
     location /api/ {
         proxy_pass http://127.0.0.1:5000/;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
     }
-    location ~ \.php\$ {
+    location ~ \.php$ {
         include snippets/fastcgi-php.conf;
         fastcgi_pass unix:/run/php/php8.1-fpm.sock;
     }
 }
 ENGINX
 
-ln -sf /etc/nginx/sites-available/$APPNAME /etc/nginx/sites-enabled/$APPNAME
+ln -sf /etc/nginx/sites-available/superdown /etc/nginx/sites-enabled/superdown
 rm -f /etc/nginx/sites-enabled/default
 
+echo "[*] Restarting nginx/php-fpm..."
 systemctl restart php8.1-fpm || systemctl restart php8.2-fpm || systemctl restart php7.4-fpm || true
 systemctl restart nginx
 
-ufw allow $PORT/tcp || true
+ufw allow 8080/tcp || true
+ufw allow 443/tcp || true
 ufw allow 5000/tcp || true
 
 echo ""
 echo "=========================="
 echo "🚀 INSTALLATION COMPLETE!"
-echo "Visit: http://YOUR_SERVER_IP:$PORT/download"
+echo "Visit: http://YOUR_SERVER_IP:8080/download"
 echo "Done!"
 echo "=========================="
