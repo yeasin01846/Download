@@ -1,29 +1,39 @@
 #!/bin/bash
 set -e
+
 PORT=8080
-NODEPORT=8081
-WEBROOT=/opt/multidown/download
 NGCONF=multidown8080
+WEBROOT=/opt/multidown/download
+DOMAIN_OR_IP=$(curl -s ifconfig.me)
 
-echo "▶ Stopping old services & cleaning old configs..."
-sudo systemctl stop nginx || true
-sudo fuser -k $PORT/tcp || true
-sudo fuser -k $NODEPORT/tcp || true
-sudo rm -f /etc/nginx/sites-available/$NGCONF /etc/nginx/sites-enabled/$NGCONF
-sudo rm -rf $WEBROOT
-sudo pkill -f deepworker.js || true
+# --- Auto clean old nginx config & port usage ---
+echo "▶ Cleaning up old nginx config for port $PORT..."
+sudo rm -f /etc/nginx/sites-available/$NGCONF
+sudo rm -f /etc/nginx/sites-enabled/$NGCONF
+for f in /etc/nginx/sites-available/*; do
+    if grep -q "listen $PORT" "$f"; then
+        name=$(basename "$f")
+        echo " -- Removing old $name (port $PORT) ..."
+        sudo rm -f "/etc/nginx/sites-available/$name"
+        sudo rm -f "/etc/nginx/sites-enabled/$name"
+    fi
+done
+if sudo lsof -i :$PORT | grep LISTEN; then
+    pid=$(sudo lsof -t -i :$PORT)
+    echo " -- Killing process on port $PORT: $pid"
+    sudo kill -9 $pid
+fi
+echo "▶ Old configs cleaned. Proceeding with new install ..."
 
-echo "▶ Installing system dependencies..."
-sudo apt update -y
-sudo apt install -y nginx php-fpm php-cli php-xml php-json php-mbstring php-curl python3 python3-pip ffmpeg git unzip curl wget nodejs npm
-
-echo "▶ Installing PHP video libraries..."
+echo "▶ Installing dependencies..."
+sudo apt update
+sudo apt install -y nginx php-fpm php-cli php-xml php-json php-mbstring php-curl python3 python3-pip ffmpeg git unzip
 sudo pip3 install -U yt-dlp gallery-dl you-get
 
-echo "▶ Creating PHP frontend..."
+echo "▶ Creating web root $WEBROOT ..."
 sudo mkdir -p $WEBROOT
 
-# index.php
+echo "▶ Writing index.php ..."
 sudo tee $WEBROOT/index.php >/dev/null <<'EOPHP'
 <!DOCTYPE html>
 <html>
@@ -36,8 +46,8 @@ body { background: #1a1b1f; color: #f3f3f3; font-family: 'Inter', Arial, sans-se
 #container { background: #22252b; padding:34px 22px 22px 22px; border-radius: 17px; min-width:340px; box-shadow:0 4px 32px #0008; text-align:center; width:100%; max-width:640px;}
 h2 { color:#00e187; margin-bottom:16px; font-weight:700;}
 input[type=text] { width: 94%; padding: 13px; border-radius: 7px; border: none; margin-bottom:20px; font-size:19px;}
-.engine-btn, .deep-btn {display:inline-block; background:#222; color:#fff; font-weight:700; border:2px solid #00e187; border-radius:8px; margin:4px 6px 14px 6px; padding:13px 30px; cursor:pointer; font-size:18px; transition:.2s;}
-.engine-btn:hover,.engine-btn.active,.deep-btn:hover{background:#00e187;color:#111;}
+.engine-btn {display:inline-block; background:#222; color:#fff; font-weight:700; border:2px solid #00e187; border-radius:8px; margin:4px 6px 14px 6px; padding:13px 30px; cursor:pointer; font-size:18px; transition:.2s;}
+.engine-btn:hover,.engine-btn.active{background:#00e187;color:#111;}
 button:disabled { background: #444; cursor:wait;}
 #progress { margin:18px 0 13px 0; min-height:22px; font-size:17px;}
 .media-list { text-align:left; margin: 0 auto; max-width:580px;}
@@ -52,9 +62,6 @@ button:disabled { background: #444; cursor:wait;}
 .format-table tr:nth-child(even){background:#252730;}
 .format-table td {color:#c7ffdc;}
 .format-dl-btn{margin-left:7px;}
-.iframe-box{background:#282c34;border-radius:8px;padding:10px 8px;margin-top:10px;}
-.iframe-url{font-size:13px;word-break:break-all;}
-.deep-btn{background:#222;color:#1deaff;}
 @media (max-width:640px) { #container{padding:11px 1vw;min-width:0;max-width:99vw;} input[type=text]{font-size:15px;} .media-list{max-width:99vw;} }
 </style>
 </head>
@@ -64,7 +71,6 @@ button:disabled { background: #444; cursor:wait;}
     <input id="url" type="text" placeholder="Paste any video/photo link (not YouTube)">
     <br>
     <div id="engines" style="margin-top:5px; margin-bottom:13px;"></div>
-    <button class="deep-btn" onclick="deepScan()">Deep Scan (Beta)</button>
     <div id="progress"></div>
     <div class="media-list" id="mediaList"></div>
 </div>
@@ -106,71 +112,47 @@ function extractEngine(engine){
         body: 'url='+encodeURIComponent(url)+'&engine='+encodeURIComponent(engine)
     })
     .then(res => res.json())
-    .then(showMediaList)
-    .catch(e=>{
-        document.getElementById('progress').innerText = 'Network/Server Error!';
-    });
-}
-function showMediaList(data){
-    if(data.status=='ok') {
-        document.getElementById('progress').innerText = 'Found '+data.items.length+' media:';
-        let html = '';
-        data.items.forEach(function(m,i) {
-            html += '<div class="media-item">';
-            html += '<div class="media-header" style="display:flex;align-items:center;">';
-            if(m.thumb){
-                html += '<img src="'+m.thumb+'" />';
-            } else if(m.type==='video' && m.formats && m.formats.length>0){
-                html += '<video src="'+m.formats[0].url+'" controls preload="none"></video>';
-            } else if(m.type==='photo'){
-                html += '<img src="'+m.url+'" />';
-            }
-            html += '<div class="media-info">';
-            html += '<div class="media-type">'+(m.type==='video'?'[VIDEO]':(m.type==='iframe'?'[EMBED/IFRAME]':'[PHOTO]'))+'</div>';
-            html += '<div style="font-size:13px;word-break:break-all">'+(m.title?m.title:'')+'</div>';
-            html += '</div></div>';
-            if(m.type==='video' && m.formats && m.formats.length>0){
-                html += '<table class="format-table"><tr><th>Format</th><th>Res</th><th>Size</th><th>Codec</th><th></th></tr>';
-                m.formats.forEach(function(fmt){
-                    html += '<tr>';
-                    html += '<td>'+fmt.ext.toUpperCase()+'</td>';
-                    html += '<td>'+fmt.res+'</td>';
-                    html += '<td>'+fmt.size+'</td>';
-                    html += '<td>'+(fmt.vcodec||'')+'</td>';
-                    html += '<td><a href="download.php?u='+encodeURIComponent(fmt.url)+'" download><button class="format-dl-btn">Download</button></a></td>';
-                    html += '</tr>';
-                });
-                html += '</table>';
-            } else if(m.type==='photo'){
-                html += '<div style="margin-top:7px;"><a href="download.php?u='+encodeURIComponent(m.url)+'" download><button>Download Photo</button></a></div>';
-            } else if(m.type==='iframe'){
-                html += '<div class="iframe-box">';
-                html += '<div class="iframe-url">'+m.url+'</div>';
-                html += '<a href="'+m.url+'" target="_blank"><button>Open Embed/Video</button></a>';
+    .then(data => {
+        if(data.status=='ok') {
+            document.getElementById('progress').innerText = 'Found '+data.items.length+' media:';
+            let html = '';
+            data.items.forEach(function(m,i) {
+                html += '<div class="media-item">';
+                html += '<div class="media-header" style="display:flex;align-items:center;">';
+                if(m.thumb){
+                    html += '<img src="'+m.thumb+'" />';
+                } else if(m.type==='video' && m.formats && m.formats.length>0){
+                    html += '<video src="'+m.formats[0].url+'" controls preload="none"></video>';
+                } else if(m.type==='photo'){
+                    html += '<img src="'+m.url+'" />';
+                }
+                html += '<div class="media-info">';
+                html += '<div class="media-type">'+(m.type==='video'?'[VIDEO]':'[PHOTO]')+'</div>';
+                html += '<div style="font-size:13px;word-break:break-all">'+(m.title?m.title:'')+'</div>';
+                html += '</div></div>';
+                if(m.type==='video' && m.formats && m.formats.length>0){
+                    html += '<table class="format-table"><tr><th>Format</th><th>Res</th><th>Size</th><th>Codec</th><th></th></tr>';
+                    m.formats.forEach(function(fmt){
+                        html += '<tr>';
+                        html += '<td>'+fmt.ext.toUpperCase()+'</td>';
+                        html += '<td>'+fmt.res+'</td>';
+                        html += '<td>'+fmt.size+'</td>';
+                        html += '<td>'+(fmt.vcodec||'')+'</td>';
+                        html += '<td><a href="download.php?u='+encodeURIComponent(fmt.url)+'" download><button class="format-dl-btn">Download</button></a></td>';
+                        html += '</tr>';
+                    });
+                    html += '</table>';
+                } else if(m.type==='photo'){
+                    html += '<div style="margin-top:7px;"><a href="download.php?u='+encodeURIComponent(m.url)+'" download><button>Download Photo</button></a></div>';
+                }
                 html += '</div>';
-            }
-            html += '</div>';
-        });
-        document.getElementById('mediaList').innerHTML = html;
-    } else {
-        document.getElementById('progress').innerText = data.msg || 'Error!';
-    }
-}
-// Deep Scan - Call Node.js API
-function deepScan(){
-    let durl = document.getElementById('url').value.trim();
-    if(!durl) { document.getElementById('progress').innerText = 'Please enter a URL.'; return; }
-    document.getElementById('progress').innerText = 'Deep scanning, please wait ...';
-    document.getElementById('mediaList').innerHTML = '';
-    fetch('deepscan.php', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: 'url='+encodeURIComponent(durl)
-    })
-    .then(res => res.json())
-    .then(showMediaList)
-    .catch(e=>{
-        document.getElementById('progress').innerText = 'DeepScan server error!';
+            });
+            document.getElementById('mediaList').innerHTML = html;
+        } else {
+            document.getElementById('progress').innerText = data.msg || 'Error!';
+        }
+    }).catch(e=>{
+        document.getElementById('progress').innerText = 'Network/Server Error!';
     });
 }
 </script>
@@ -178,7 +160,7 @@ function deepScan(){
 </html>
 EOPHP
 
-# extract.php (FULL PHP PARSER)
+echo "▶ Writing extract.php ..."
 sudo tee $WEBROOT/extract.php >/dev/null <<'EOPHP'
 <?php
 function fsize($bytes){
@@ -187,6 +169,7 @@ function fsize($bytes){
     $f = floor(log($bytes,1024));
     return round($bytes/pow(1024,$f),($f>1)?2:0).$sz[$f];
 }
+
 function parse_yt_dlp($data) {
     $items = [];
     if(isset($data['formats']) && is_array($data['formats'])){
@@ -225,6 +208,7 @@ function parse_yt_dlp($data) {
     }
     return $items;
 }
+
 function parse_gallery_dl($data){
     $items = [];
     if(isset($data['files']) && is_array($data['files'])){
@@ -237,6 +221,7 @@ function parse_gallery_dl($data){
     }
     return $items;
 }
+
 function parse_youget($data){
     $items = [];
     if(isset($data['streams']) && is_array($data['streams'])){
@@ -269,42 +254,37 @@ function parse_youget($data){
     }
     return $items;
 }
-// fallback: manual html scraper (now with iframe support)
+
+// fallback: manual html scraper
 function parse_manual($url){
     $items = [];
     $html = @file_get_contents($url);
     if($html){
-        // images
         if(preg_match_all('/<img[^>]+src=["\']([^"\'>]+)["\']/i', $html, $m)){
             foreach($m[1] as $img){
                 $imgurl = (stripos($img,'http')===0) ? $img : $url.$img;
                 $items[] = ['type'=>'photo','url'=>$imgurl];
             }
         }
-        // videos
         if(preg_match_all('/<video[^>]+src=["\']([^"\'>]+)["\']/i', $html, $m)){
             foreach($m[1] as $v){
                 $vidurl = (stripos($v,'http')===0) ? $v : $url.$v;
                 $items[] = ['type'=>'video','formats'=>[['url'=>$vidurl,'ext'=>'mp4','res'=>'-','size'=>'-','vcodec'=>'']] ];
             }
         }
-        // iframes (enhanced)
-        if(preg_match_all('/<iframe[^>]+src=["\']([^"\'>]+)["\']/i', $html, $m)){
-            foreach($m[1] as $if){
-                $iframeurl = (stripos($if,'http')===0) ? $if : $url.$if;
-                $items[] = ['type'=>'iframe','url'=>$iframeurl];
-            }
-        }
     }
     return $items;
 }
+
 $url = trim($_POST['url'] ?? '');
 $engine = trim($_POST['engine'] ?? 'yt-dlp');
+
 if(!$url || preg_match('#youtube\.com|youtu\.be#i',$url)) {
     echo json_encode(['status'=>'err', 'msg'=>'Sorry! YouTube is not supported.']);
     exit;
 }
 $out = []; $data = null;
+
 if($engine==='yt-dlp'){
     exec("yt-dlp --no-playlist --dump-json ".escapeshellarg($url)." 2>/dev/null", $out, $ret);
     $data = @json_decode(is_array($out)?implode("\n",$out):$out,true);
@@ -320,29 +300,14 @@ if($engine==='yt-dlp'){
 } else if($engine==='manual'){
     $items = parse_manual($url);
 } else $items = [];
+
 if(empty($items)) { echo json_encode(['status'=>'err','msg'=>'No video/photo found!']); exit; }
 echo json_encode(['status'=>'ok','items'=>$items]);
 exit;
 ?>
 EOPHP
 
-# deepscan.php
-sudo tee $WEBROOT/deepscan.php >/dev/null <<'EOPHP'
-<?php
-$url = trim($_POST['url'] ?? '');
-if(!$url) die(json_encode(['status'=>'err','msg'=>'No URL']));
-$node_api = 'http://127.0.0.1:8081/api/deepscan';
-$res = @file_get_contents($node_api, false, stream_context_create([
-    'http'=>['method'=>'POST',
-             'header'=>"Content-Type: application/json\r\n",
-             'content'=>json_encode(['url'=>$url]),
-             'timeout'=>30
-]]));
-echo $res ? $res : json_encode(['status'=>'err','msg'=>'DeepScan unavailable']);
-?>
-EOPHP
-
-# download.php
+echo "▶ Writing download.php ..."
 sudo tee $WEBROOT/download.php >/dev/null <<'EOPHP'
 <?php
 $url = $_GET['u'] ?? '';
@@ -352,63 +317,14 @@ header('Content-Type: application/octet-stream');
 header('Content-Disposition: attachment; filename="downloaded.'.$ext.'"');
 readfile($url);
 exit;
-?>
 EOPHP
 
-echo "▶ Writing Node.js DeepScan worker..."
-sudo mkdir -p /opt/deepworker
-sudo tee /opt/deepworker/deepworker.js >/dev/null <<'EOF'
-// === Node.js Puppeteer Worker ===
-const express = require('express');
-const puppeteer = require('puppeteer');
-const cors = require('cors');
-const app = express();
-app.use(cors());
-app.use(express.json({limit: '2mb'}));
-app.post('/api/deepscan', async (req, res) => {
-  const url = req.body.url;
-  if (!url || typeof url !== 'string' || !/^https?:\/\//.test(url)) return res.json({status:'err', msg:'Invalid URL.'});
-  try {
-    const browser = await puppeteer.launch({headless: "new", args:['--no-sandbox','--disable-setuid-sandbox']});
-    const page = await browser.newPage();
-    let links = [], videos = [], iframes = [];
-    page.on('response', async response => {
-      const reqUrl = response.url();
-      if(/\.(mp4|m3u8|hls|mov|avi)(\?|$)/i.test(reqUrl)) {
-        links.push(reqUrl);
-      }
-    });
-    await page.goto(url, {waitUntil:'domcontentloaded', timeout:60000});
-    await page.waitForTimeout(3000);
-    videos = await page.$$eval('video,source', els => els.map(el=>el.src).filter(Boolean));
-    iframes = await page.$$eval('iframe', els => els.map(el=>el.src).filter(Boolean));
-    await page.waitForTimeout(3000);
-    await browser.close();
-    let found = [...new Set([...links, ...videos, ...iframes])];
-    let result = found.map(u=>{
-      if(/\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(u)) return {type:'photo', url:u};
-      if(/\.(mp4|m3u8|mov|avi)(\?|$)/i.test(u)) return {type:'video', url:u};
-      if(/iframe|embed/.test(u)) return {type:'iframe', url:u};
-      return {type:'media', url:u};
-    });
-    res.json({status:'ok', items: result});
-  } catch(e) {
-    res.json({status:'err', msg: 'DeepScan error: '+e.message});
-  }
-});
-app.listen(8081, ()=>console.log('DeepScan Worker listening on 8081'));
-EOF
+sudo chown -R www-data:www-data $WEBROOT
+sudo chmod 755 $WEBROOT
+sudo chmod 644 $WEBROOT/*.php
+sudo chmod 1777 /tmp
 
-cd /opt/deepworker
-npm install puppeteer express cors
-
-sudo npm install -g pm2
-pm2 delete deepworker || true
-pm2 start deepworker.js --name deepworker
-pm2 save
-pm2 startup
-
-echo "▶ Configuring nginx (PHP+frontend on port $PORT)..."
+echo "▶ Creating custom nginx config for port $PORT..."
 sudo tee /etc/nginx/sites-available/$NGCONF >/dev/null <<EOF
 server {
     listen $PORT default_server;
@@ -429,12 +345,13 @@ server {
 EOF
 
 sudo ln -sf /etc/nginx/sites-available/$NGCONF /etc/nginx/sites-enabled/$NGCONF
+
+echo "▶ Enabling firewall for port $PORT..."
+sudo ufw allow $PORT/tcp || sudo iptables -I INPUT -p tcp --dport $PORT -j ACCEPT
+
+echo "▶ Restarting nginx/php-fpm..."
 sudo systemctl restart php*-fpm
 sudo systemctl restart nginx
 
-sudo ufw allow $PORT/tcp || sudo iptables -I INPUT -p tcp --dport $PORT -j ACCEPT
-
-IP=$(curl -s ifconfig.me)
 echo
-echo "✅ FINISHED! Open: http://$IP:$PORT/download"
-echo "▶ DeepWorker should run at http://127.0.0.1:$NODEPORT/api/deepscan"
+echo "✅ READY! Visit: http://$DOMAIN_OR_IP:8080/download"
