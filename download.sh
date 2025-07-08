@@ -4,8 +4,6 @@ set -e
 PORT=8080
 WEBROOT=/opt/multidown/download
 NGCONF=multidown8080
-
-# IP
 DOMAIN_OR_IP=$(curl -s ifconfig.me)
 
 # Prepare VPS
@@ -20,26 +18,42 @@ sudo lsof -t -i :$PORT | xargs -r sudo kill -9
 # Web directory
 sudo mkdir -p $WEBROOT
 
-# Index PHP
+# Original UI HTML + CSS
 sudo tee $WEBROOT/index.php >/dev/null <<'EOPHP'
+<!DOCTYPE html>
 <html>
-<head><title>Pro Downloader</title></head>
+<head>
+<title>Multi-Engine Pro Downloader</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link href="https://fonts.googleapis.com/css?family=Inter:400,600&display=swap" rel="stylesheet">
+<style>
+body { background: #1a1b1f; color: #f3f3f3; font-family: 'Inter', Arial, sans-serif; display:flex; justify-content:center; align-items:center; min-height:100vh; margin:0; }
+#container { background: #22252b; padding:34px 22px; border-radius:17px; box-shadow:0 4px 32px #0008; text-align:center; width:100%; max-width:640px; }
+input { width:90%; padding:10px; }
+button { padding:10px; }
+</style>
+</head>
 <body>
-<input id="url" placeholder="Paste URL here" style="width:90%">
-<button onclick="dl('yt-dlp')">Download Video</button>
-<div id="results"></div>
+<div id="container">
+  <h2>⚡ Multi-Engine Pro Downloader</h2>
+  <input id="url" placeholder="Paste URL here"><br>
+  <button onclick="dl('yt-dlp')">Download Video</button>
+  <div id="results"></div>
+</div>
 <script>
 function dl(engine){
-fetch('extract.php',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'url='+encodeURIComponent(url.value)+'&engine='+engine})
-.then(r=>r.json()).then(d=>{
-results.innerHTML=d.items.map(i=>`<a href="download.php?u=${encodeURIComponent(i.url)}">DOWNLOAD ${i.type.toUpperCase()}</a>`).join('<br>')
-})}
+  fetch('extract.php',{
+    method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'url='+encodeURIComponent(url.value)+'&engine='+engine
+  }).then(r=>r.json()).then(d=>{
+    results.innerHTML=d.items.map(i=>`<a href="download.php?u=${encodeURIComponent(i.url)}">DOWNLOAD ${i.type.toUpperCase()}</a>`).join('<br>')
+  })}
 </script>
 </body>
 </html>
 EOPHP
 
-# extract.php
+# Updated Backend extract.php
 sudo tee $WEBROOT/extract.php >/dev/null <<'EOPHP'
 <?php
 $url=$_POST['url'];
@@ -95,12 +109,7 @@ server {
 EOF
 
 sudo ln -sf /etc/nginx/sites-available/$NGCONF /etc/nginx/sites-enabled/
-
-# Firewall
 sudo ufw allow $PORT/tcp || true
-
-# Restart Services
 sudo systemctl restart nginx php*-fpm
 
-# Done
 echo "✅ Installation complete! Open: http://$DOMAIN_OR_IP:$PORT/download"
