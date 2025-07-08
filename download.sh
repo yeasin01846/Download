@@ -62,6 +62,8 @@ button:disabled { background: #444; cursor:wait;}
 .format-table tr:nth-child(even){background:#252730;}
 .format-table td {color:#c7ffdc;}
 .format-dl-btn{margin-left:7px;}
+.iframe-box{background:#282c34;border-radius:8px;padding:10px 8px;margin-top:10px;}
+.iframe-url{font-size:13px;word-break:break-all;}
 @media (max-width:640px) { #container{padding:11px 1vw;min-width:0;max-width:99vw;} input[type=text]{font-size:15px;} .media-list{max-width:99vw;} }
 </style>
 </head>
@@ -127,7 +129,7 @@ function extractEngine(engine){
                     html += '<img src="'+m.url+'" />';
                 }
                 html += '<div class="media-info">';
-                html += '<div class="media-type">'+(m.type==='video'?'[VIDEO]':'[PHOTO]')+'</div>';
+                html += '<div class="media-type">'+(m.type==='video'?'[VIDEO]':(m.type==='iframe'?'[EMBED/IFRAME]':'[PHOTO]'))+'</div>';
                 html += '<div style="font-size:13px;word-break:break-all">'+(m.title?m.title:'')+'</div>';
                 html += '</div></div>';
                 if(m.type==='video' && m.formats && m.formats.length>0){
@@ -144,6 +146,11 @@ function extractEngine(engine){
                     html += '</table>';
                 } else if(m.type==='photo'){
                     html += '<div style="margin-top:7px;"><a href="download.php?u='+encodeURIComponent(m.url)+'" download><button>Download Photo</button></a></div>';
+                } else if(m.type==='iframe'){
+                    html += '<div class="iframe-box">';
+                    html += '<div class="iframe-url">'+m.url+'</div>';
+                    html += '<a href="'+m.url+'" target="_blank"><button>Open Embed/Video</button></a>';
+                    html += '</div>';
                 }
                 html += '</div>';
             });
@@ -255,21 +262,30 @@ function parse_youget($data){
     return $items;
 }
 
-// fallback: manual html scraper
+// fallback: manual html scraper (now with iframe support)
 function parse_manual($url){
     $items = [];
     $html = @file_get_contents($url);
     if($html){
+        // images
         if(preg_match_all('/<img[^>]+src=["\']([^"\'>]+)["\']/i', $html, $m)){
             foreach($m[1] as $img){
                 $imgurl = (stripos($img,'http')===0) ? $img : $url.$img;
                 $items[] = ['type'=>'photo','url'=>$imgurl];
             }
         }
+        // videos
         if(preg_match_all('/<video[^>]+src=["\']([^"\'>]+)["\']/i', $html, $m)){
             foreach($m[1] as $v){
                 $vidurl = (stripos($v,'http')===0) ? $v : $url.$v;
                 $items[] = ['type'=>'video','formats'=>[['url'=>$vidurl,'ext'=>'mp4','res'=>'-','size'=>'-','vcodec'=>'']] ];
+            }
+        }
+        // iframes (enhanced)
+        if(preg_match_all('/<iframe[^>]+src=["\']([^"\'>]+)["\']/i', $html, $m)){
+            foreach($m[1] as $if){
+                $iframeurl = (stripos($if,'http')===0) ? $if : $url.$if;
+                $items[] = ['type'=>'iframe','url'=>$iframeurl];
             }
         }
     }
@@ -286,6 +302,8 @@ if(!$url || preg_match('#youtube\.com|youtu\.be#i',$url)) {
 $out = []; $data = null;
 
 if($engine==='yt-dlp'){
+    // Optionally: add custom user-agent if needed
+    // exec("yt-dlp --user-agent 'Mozilla/5.0' --no-playlist --dump-json ".escapeshellarg($url)." 2>/dev/null", $out, $ret);
     exec("yt-dlp --no-playlist --dump-json ".escapeshellarg($url)." 2>/dev/null", $out, $ret);
     $data = @json_decode(is_array($out)?implode("\n",$out):$out,true);
     $items = $data?parse_yt_dlp($data):[];
