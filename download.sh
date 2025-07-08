@@ -1,10 +1,11 @@
 #!/bin/bash
 set -e
 
-WEBROOT=/var/www/html/download
+PORT=8080
+WEBROOT=/opt/videodownload/download
 DOMAIN_OR_IP=$(curl -s ifconfig.me)
 
-echo "▶ Installing dependencies..."
+echo "▶ Installing dependencies (nginx, PHP, Python, yt-dlp, ffmpeg)..."
 sudo apt update
 sudo apt install -y nginx php-fpm php-cli php-xml php-json php-mbstring php-curl python3 python3-pip ffmpeg git unzip
 
@@ -110,7 +111,6 @@ if($_SERVER['REQUEST_METHOD']=='POST') {
         echo json_encode(['status'=>'err', 'msg'=>'Sorry! YouTube is not supported.']);
         exit;
     }
-    // yt-dlp json fetch
     $cmd = "yt-dlp --no-playlist --dump-json ".escapeshellarg($url)." 2>/dev/null";
     exec($cmd, $out, $ret);
     $json = is_array($out) ? implode("\n", $out) : $out;
@@ -178,9 +178,34 @@ sudo chmod 755 $WEBROOT
 sudo chmod 644 $WEBROOT/*.php
 sudo chmod 1777 /tmp
 
+echo "▶ Creating custom nginx config for port $PORT..."
+sudo tee /etc/nginx/sites-available/videodownload8080 >/dev/null <<EOF
+server {
+    listen $PORT default_server;
+    root /opt/videodownload;
+    index index.php index.html;
+    server_name _;
+
+    location /download/ {
+        alias $WEBROOT/;
+        index index.php index.html;
+        try_files \$uri \$uri/ =404;
+    }
+    location ~ \.php\$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/var/run/php/php$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')-fpm.sock;
+    }
+}
+EOF
+
+sudo ln -sf /etc/nginx/sites-available/videodownload8080 /etc/nginx/sites-enabled/videodownload8080
+
+echo "▶ Enabling firewall for port $PORT..."
+sudo ufw allow $PORT/tcp || sudo iptables -I INPUT -p tcp --dport $PORT -j ACCEPT
+
 echo "▶ Restarting nginx/php-fpm..."
 sudo systemctl restart php*-fpm
 sudo systemctl restart nginx
 
 echo
-echo "✅ DONE! Visit: http://$DOMAIN_OR_IP/download"
+echo "✅ DONE! Visit: http://$DOMAIN_OR_IP:8080/download"
