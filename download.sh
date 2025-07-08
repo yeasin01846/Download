@@ -1,12 +1,10 @@
 #!/bin/bash
 set -e
 
-# Customizable variables
-DOWNLOADER_PORT=8081
-WEBROOT=/opt/videodownloader
+WEBROOT=/var/www/html/download
 DOMAIN_OR_IP=$(curl -s ifconfig.me)
 
-echo "▶ Installing dependencies (nginx, PHP, Python, yt-dlp, ffmpeg)..."
+echo "▶ Installing dependencies..."
 sudo apt update
 sudo apt install -y nginx php-fpm php-cli php-xml php-json php-mbstring php-curl python3 python3-pip ffmpeg git unzip
 
@@ -21,42 +19,48 @@ sudo tee $WEBROOT/index.php >/dev/null <<'EOPHP'
 <!DOCTYPE html>
 <html>
 <head>
-<title>Video Downloader</title>
+<title>Pro Media Extractor</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-body { background: #222; color: #f7f7f7; font-family: 'Segoe UI', Arial, sans-serif; display:flex; justify-content:center; align-items:center; height:100vh; margin:0; }
-#container { background: #2a2a2a; padding: 40px 30px 30px 30px; border-radius: 18px; min-width:340px; box-shadow:0 4px 32px #0008; text-align:center; width:100%; max-width:410px;}
+body { background: #181a1b; color: #f3f3f3; font-family: 'Segoe UI', Arial, sans-serif; display:flex; justify-content:center; align-items:center; min-height:100vh; margin:0; }
+#container { background: #23272f; padding:38px 24px 28px 24px; border-radius: 17px; min-width:340px; box-shadow:0 4px 32px #0008; text-align:center; width:100%; max-width:480px;}
 h2 { color:#00e187; margin-bottom:18px;}
-input[type=text] { width: 90%; padding: 14px; border-radius: 7px; border: none; margin-bottom:18px; font-size:18px;}
-button { background:#00e187; color:#fff; border:none; padding:14px 38px; border-radius:7px; font-size:17px; cursor:pointer; transition:0.2s; }
+input[type=text] { width: 92%; padding: 13px; border-radius: 7px; border: none; margin-bottom:20px; font-size:18px;}
+button { background:#00e187; color:#fff; border:none; padding:12px 30px; border-radius:7px; font-size:16px; cursor:pointer; margin:3px 0;}
 button:disabled { background: #444; cursor:wait;}
-#progress { margin:24px 0 10px 0; min-height:22px; font-size:17px;}
-#result { margin:14px 0;}
-@media (max-width:480px) { #container{padding:25px 6px;min-width:0;max-width:95vw;} input[type=text]{font-size:15px;}}
+#progress { margin:20px 0 13px 0; min-height:22px; font-size:17px;}
+.media-list { text-align:left; margin: 0 auto; max-width:420px;}
+.media-item { background:#22252b; border-radius:9px; padding:14px 10px 10px 10px; margin-bottom:13px; display:flex; align-items:center; }
+.media-thumb { flex:0 0 100px; }
+.media-thumb img, .media-thumb video { width:90px; height:60px; object-fit:cover; border-radius:7px; border:1px solid #2c2c2c;}
+.media-info { flex:1; padding-left:13px;}
+.media-type { font-size:13px; color:#e8e860; padding:0 0 3px 0;}
+.media-dl { margin-left:10px;}
+@media (max-width:500px) { #container{padding:18px 4px;min-width:0;max-width:99vw;} input[type=text]{font-size:14px;} .media-thumb img, .media-thumb video {width:66px;height:44px;} .media-item{padding:7px 2px 7px 2px;} }
 </style>
 </head>
 <body>
 <div id="container">
-    <h2>⚡ Modern Video Downloader</h2>
-    <input id="url" type="text" placeholder="Paste any non-YouTube video link">
+    <h2>🔎 Pro Media Extractor</h2>
+    <input id="url" type="text" placeholder="Paste any page/video link (not YouTube)">
     <br>
-    <button id="go" onclick="startProcess()">Download</button>
+    <button id="go" onclick="startExtract()">Extract</button>
     <div id="progress"></div>
-    <div id="result"></div>
+    <div class="media-list" id="mediaList"></div>
 </div>
 <script>
-function startProcess() {
+function startExtract() {
     let go = document.getElementById('go');
     go.disabled = true;
-    go.innerText = 'Processing...';
+    go.innerText = 'Extracting...';
     document.getElementById('progress').innerText = 'Processing... Please wait ⏳';
-    document.getElementById('result').innerHTML = '';
+    document.getElementById('mediaList').innerHTML = '';
     let url = document.getElementById('url').value.trim();
     if(!url) {
-        document.getElementById('progress').innerText = 'Please enter a video link.';
-        go.disabled = false; go.innerText = 'Download'; return;
+        document.getElementById('progress').innerText = 'Please enter a URL.';
+        go.disabled = false; go.innerText = 'Extract'; return;
     }
-    fetch('process.php', {
+    fetch('extract.php', {
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: 'url='+encodeURIComponent(url)
@@ -64,15 +68,32 @@ function startProcess() {
     .then(res => res.json())
     .then(data => {
         if(data.status=='ok') {
-            document.getElementById('progress').innerText = 'Ready! ✅';
-            document.getElementById('result').innerHTML = '<a href="'+data.link+'" download><button style="background:#00bc8c;">⬇ Download Video</button></a>';
+            document.getElementById('progress').innerText = 'Found '+data.items.length+' media:';
+            let html = '';
+            data.items.forEach(function(m) {
+                html += '<div class="media-item">';
+                html += '<div class="media-thumb">';
+                if(m.type==='video'){
+                    html += '<video src="'+m.url+'" controls preload="none"></video>';
+                } else {
+                    html += '<img src="'+m.url+'" />';
+                }
+                html += '</div>';
+                html += '<div class="media-info">';
+                html += '<div class="media-type">'+(m.type==='video'?'[VIDEO]':'[PHOTO]')+'</div>';
+                html += '<div style="font-size:13px;word-break:break-all">'+m.ext.toUpperCase()+' | '+(m.res||'')+'</div>';
+                html += '</div>';
+                html += '<div class="media-dl"><a href="download.php?u='+encodeURIComponent(m.url)+'" download><button>Download</button></a></div>';
+                html += '</div>';
+            });
+            document.getElementById('mediaList').innerHTML = html;
         } else {
             document.getElementById('progress').innerText = data.msg || 'Error!';
         }
-        go.disabled = false; go.innerText = 'Download';
+        go.disabled = false; go.innerText = 'Extract';
     }).catch(e=>{
         document.getElementById('progress').innerText = 'Network/Server Error!';
-        go.disabled = false; go.innerText = 'Download';
+        go.disabled = false; go.innerText = 'Extract';
     });
 }
 </script>
@@ -80,8 +101,8 @@ function startProcess() {
 </html>
 EOPHP
 
-echo "▶ Writing process.php ..."
-sudo tee $WEBROOT/process.php >/dev/null <<'EOPHP'
+echo "▶ Writing extract.php ..."
+sudo tee $WEBROOT/extract.php >/dev/null <<'EOPHP'
 <?php
 if($_SERVER['REQUEST_METHOD']=='POST') {
     $url = trim($_POST['url'] ?? '');
@@ -89,17 +110,52 @@ if($_SERVER['REQUEST_METHOD']=='POST') {
         echo json_encode(['status'=>'err', 'msg'=>'Sorry! YouTube is not supported.']);
         exit;
     }
-    $temp = sys_get_temp_dir();
-    $file = $temp.'/vd_'.md5($url.time()).'.mp4';
-    $cmd = 'yt-dlp --no-playlist --restrict-filenames -o "'.$file.'" -f "mp4" '.escapeshellarg($url).' 2>&1';
+    // yt-dlp json fetch
+    $cmd = "yt-dlp --no-playlist --dump-json ".escapeshellarg($url)." 2>/dev/null";
     exec($cmd, $out, $ret);
-    if(file_exists($file) && filesize($file) > 100*1024) {
-        $base = basename($file);
-        $downloadUrl = "download.php?f=".urlencode($base);
-        echo json_encode(['status'=>'ok','link'=>$downloadUrl]);
-    } else {
-        echo json_encode(['status'=>'err','msg'=>"Failed to process video.<br>".htmlspecialchars(implode("\n",$out))]);
+    $json = is_array($out) ? implode("\n", $out) : $out;
+    $data = @json_decode($json,true);
+    if(!$data) { echo json_encode(['status'=>'err','msg'=>'Failed to extract media.']); exit; }
+
+    $items = [];
+    // ছবি (thumbnails)
+    if(isset($data['thumbnails']) && is_array($data['thumbnails'])){
+        foreach($data['thumbnails'] as $t){
+            if(isset($t['url'])){
+                $items[] = [
+                    'url'=>$t['url'],
+                    'type'=>'photo',
+                    'ext'=>'jpg',
+                    'res'=>isset($t['resolution'])?$t['resolution']:'',
+                ];
+            }
+        }
     }
+    // ভিডিও (formats)
+    if(isset($data['formats']) && is_array($data['formats'])){
+        foreach($data['formats'] as $fmt){
+            if(!isset($fmt['url'])) continue;
+            $ext = $fmt['ext'] ?? 'mp4';
+            $type = ($ext=='jpg'||$ext=='png'||$ext=='webp') ? 'photo' : 'video';
+            $items[] = [
+                'url'=>$fmt['url'],
+                'type'=>$type,
+                'ext'=>$ext,
+                'res'=>(isset($fmt['height'])?$fmt['height'].'p':''),
+            ];
+        }
+    }
+    // Remove duplicate URLs
+    $u = [];
+    $items = array_filter($items, function($item) use (&$u){
+        if(in_array($item['url'], $u)) return false;
+        $u[] = $item['url'];
+        return true;
+    });
+
+    if(empty($items)) { echo json_encode(['status'=>'err','msg'=>'No photo or video found.']); exit; }
+    echo json_encode(['status'=>'ok','items'=>$items]);
+    exit;
 } else {
     echo "Nothing here!";
 }
@@ -108,50 +164,23 @@ EOPHP
 echo "▶ Writing download.php ..."
 sudo tee $WEBROOT/download.php >/dev/null <<'EOPHP'
 <?php
-$f = basename($_GET['f'] ?? '');
-$file = sys_get_temp_dir().'/'.$f;
-if(!$f || !preg_match('/^vd_[a-z0-9]+\.mp4$/i',$f) || !file_exists($file)) {
-    die("File not found.");
-}
-header('Content-Type: video/mp4');
-header('Content-Disposition: attachment; filename="video.mp4"');
-header('Content-Length: '.filesize($file));
-readfile($file);
+$url = $_GET['u'] ?? '';
+if(!$url || !filter_var($url, FILTER_VALIDATE_URL)) die("Invalid.");
+$ext = pathinfo(parse_url($url, PHP_URL_PATH), PATHINFO_EXTENSION) ?: 'media';
+header('Content-Type: application/octet-stream');
+header('Content-Disposition: attachment; filename="downloaded.'.$ext.'"');
+readfile($url);
 exit;
 EOPHP
 
 sudo chown -R www-data:www-data $WEBROOT
 sudo chmod 755 $WEBROOT
 sudo chmod 644 $WEBROOT/*.php
-
-echo "▶ Creating Nginx site config (port $DOWNLOADER_PORT)..."
-sudo tee /etc/nginx/sites-available/videodownloader >/dev/null <<EOF
-server {
-    listen $DOWNLOADER_PORT default_server;
-    root $WEBROOT;
-    index index.php index.html;
-    server_name _;
-
-    location / {
-        try_files \$uri \$uri/ =404;
-    }
-    location ~ \.php\$ {
-        include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:/var/run/php/php$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')-fpm.sock;
-    }
-}
-EOF
-
-sudo ln -sf /etc/nginx/sites-available/videodownloader /etc/nginx/sites-enabled/videodownloader
-
-# Prevent port conflict
-if sudo ss -tulpn | grep ":$DOWNLOADER_PORT" ; then
-    echo "Error: Port $DOWNLOADER_PORT already in use! Edit the script to change port."
-    exit 1
-fi
-
-sudo nginx -t && sudo systemctl reload nginx
 sudo chmod 1777 /tmp
 
+echo "▶ Restarting nginx/php-fpm..."
+sudo systemctl restart php*-fpm
+sudo systemctl restart nginx
+
 echo
-echo "✅ DONE! Access your Video Downloader at: http://$DOMAIN_OR_IP:$DOWNLOADER_PORT"
+echo "✅ DONE! Visit: http://$DOMAIN_OR_IP/download"
