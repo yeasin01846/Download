@@ -1,46 +1,43 @@
 #!/bin/bash
-
 set -e
 
-## 1. সিস্টেম আপডেট এবং দরকারি সফটওয়্যার
-echo "[*] System updating..."
+PORT=8080
+APPNAME=superdown
+
+echo "[*] System updating & cleaning..."
 apt update && apt upgrade -y
 
-echo "[*] Removing old node/npm/node_modules..."
+# Remove old node/npm/nginx config
 apt remove -y nodejs libnode-dev npm || true
 apt purge -y nodejs libnode-dev npm || true
 apt autoremove -y
 rm -rf /usr/include/node /usr/lib/node_modules /usr/bin/node /usr/bin/npm
 
-echo "[*] Installing essentials (nginx, php, pip, ffmpeg, unzip, git, curl, wget)..."
+# Remove old nginx config if exists
+rm -f /etc/nginx/sites-enabled/$APPNAME
+rm -f /etc/nginx/sites-available/$APPNAME
+
+echo "[*] Installing essentials..."
 apt install -y nginx php-fpm php-cli php-xml php-json php-mbstring php-curl python3 python3-pip ffmpeg git unzip curl wget
 
-## 2. Node.js 20.x & npm ইনস্টল
-echo "[*] Installing Node.js 20.x & npm..."
+echo "[*] Installing Node.js 20.x & pm2..."
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
 apt install -y nodejs
 npm install -g pm2
 
-## 3. yt-dlp, gallery-dl, you-get
 echo "[*] Installing yt-dlp, gallery-dl, you-get..."
 pip3 install -U yt-dlp gallery-dl you-get
 
-## 4. Download worker code
+echo "[*] Deploying Node worker..."
 mkdir -p /opt/deepworker
-cd /opt/deepworker
-
-echo "[*] Writing deepworker.js..."
-cat > deepworker.js <<'EOF'
+cat > /opt/deepworker/deepworker.js <<'EOF'
 const express = require("express");
 const cors = require("cors");
 const { exec } = require("child_process");
-
 const app = express();
 app.use(cors());
 app.use(express.json());
 const PORT = 5000;
-
-// Helper: run a shell command and return output
 function run(cmd) {
   return new Promise((resolve) => {
     exec(cmd, { maxBuffer: 1024 * 1024 * 30 }, (err, stdout, stderr) => {
@@ -48,51 +45,39 @@ function run(cmd) {
     });
   });
 }
-
-// API: yt-dlp, gallery-dl, you-get, manual
 app.post("/api/extract", async (req, res) => {
   let { url, engine } = req.body;
   if (!url) return res.json({ error: "Missing url" });
-
   let cmd = "";
   if (engine === "yt-dlp") {
     cmd = `yt-dlp --dump-json --no-warnings "${url}"`;
   } else if (engine === "gallery-dl") {
-    cmd = `gallery-dl --list-extractors && gallery-dl --list-extractors | grep -iq $(echo "${url}" | awk -F/ '{print $3}') && gallery-dl --json "${url}" || echo '{}'`;
+    cmd = `gallery-dl --json "${url}"`;
   } else if (engine === "you-get") {
     cmd = `you-get --json "${url}"`;
   } else {
-    // fallback/manual (try yt-dlp first)
     cmd = `yt-dlp --dump-json --no-warnings "${url}" || gallery-dl --json "${url}" || you-get --json "${url}"`;
   }
   let { stdout } = await run(cmd);
-
-  // Try parse JSONs
   let out;
   try { out = JSON.parse(stdout.split("\n").filter(Boolean).pop() || "{}"); }
   catch { out = { raw: stdout }; }
-
   res.json(out);
 });
-
 app.listen(PORT, () => {
   console.log("Deepworker running on " + PORT);
 });
 EOF
 
-echo "[*] Installing npm dependencies (puppeteer, express, cors)..."
-npm install puppeteer express cors
-
-echo "[*] Starting deepworker.js via pm2..."
+cd /opt/deepworker
+npm install puppeteer express cors || true
+pm2 delete deepworker || true
 pm2 start deepworker.js --name deepworker
 pm2 save
 
-## 5. Download frontend PHP
-mkdir -p /opt/superdown/download
-cd /opt/superdown/download
-
-# Minimalistic index.php UI
-cat > index.php <<'EOPHP'
+echo "[*] Deploying PHP frontend..."
+mkdir -p /opt/$APPNAME/download
+cat > /opt/$APPNAME/download/index.php <<'EOPHP'
 <!DOCTYPE html>
 <html lang="en"><head>
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -165,48 +150,43 @@ function fetchResults() {
 </body></html>
 EOPHP
 
-echo "[*] Creating nginx config..."
-cat > /etc/nginx/sites-available/superdown <<'ENGINX'
+echo "[*] Configuring nginx on $PORT ..."
+cat > /etc/nginx/sites-available/$APPNAME <<ENGINX
 server {
-    listen 80;
+    listen $PORT;
     server_name _;
-    root /opt/superdown/download;
+    root /opt/$APPNAME/download;
     index index.php index.html;
 
     location /download {
-        alias /opt/superdown/download;
+        alias /opt/$APPNAME/download;
         index index.php index.html;
-        try_files $uri $uri/ /download/index.php?$query_string;
+        try_files \$uri \$uri/ /download/index.php?\$query_string;
     }
-
     location /api/ {
         proxy_pass http://127.0.0.1:5000/;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
     }
-
-    location ~ \.php$ {
+    location ~ \.php\$ {
         include snippets/fastcgi-php.conf;
         fastcgi_pass unix:/run/php/php8.1-fpm.sock;
     }
 }
 ENGINX
 
-ln -sf /etc/nginx/sites-available/superdown /etc/nginx/sites-enabled/superdown
+ln -sf /etc/nginx/sites-available/$APPNAME /etc/nginx/sites-enabled/$APPNAME
 rm -f /etc/nginx/sites-enabled/default
 
-echo "[*] Restarting nginx/php-fpm..."
 systemctl restart php8.1-fpm || systemctl restart php8.2-fpm || systemctl restart php7.4-fpm || true
 systemctl restart nginx
 
-## 6. Firewall allow
-ufw allow 80/tcp || true
-ufw allow 443/tcp || true
+ufw allow $PORT/tcp || true
 ufw allow 5000/tcp || true
 
 echo ""
 echo "=========================="
 echo "🚀 INSTALLATION COMPLETE!"
-echo "Visit: http://YOUR_SERVER_IP/download"
+echo "Visit: http://YOUR_SERVER_IP:$PORT/download"
 echo "Done!"
 echo "=========================="
