@@ -6,34 +6,27 @@ NGCONF=multidown8080
 WEBROOT=/opt/multidown/download
 DOMAIN_OR_IP=$(curl -s ifconfig.me)
 
-# --- Auto clean old nginx config & port usage ---
-echo "▶ Cleaning up old nginx config for port $PORT..."
+# --- Clean old nginx config & port usage ---
 sudo rm -f /etc/nginx/sites-available/$NGCONF
 sudo rm -f /etc/nginx/sites-enabled/$NGCONF
 for f in /etc/nginx/sites-available/*; do
     if grep -q "listen $PORT" "$f"; then
-        name=$(basename "$f")
-        echo " -- Removing old $name (port $PORT) ..."
-        sudo rm -f "/etc/nginx/sites-available/$name"
-        sudo rm -f "/etc/nginx/sites-enabled/$name"
+        sudo rm -f "/etc/nginx/sites-available/$(basename "$f")"
+        sudo rm -f "/etc/nginx/sites-enabled/$(basename "$f")"
     fi
 done
 if sudo lsof -i :$PORT | grep LISTEN; then
     pid=$(sudo lsof -t -i :$PORT)
-    echo " -- Killing process on port $PORT: $pid"
     sudo kill -9 $pid
 fi
-echo "▶ Old configs cleaned. Proceeding with new install ..."
 
-echo "▶ Installing dependencies..."
 sudo apt update
 sudo apt install -y nginx php-fpm php-cli php-xml php-json php-mbstring php-curl python3 python3-pip ffmpeg git unzip
 sudo pip3 install -U yt-dlp gallery-dl you-get
 
-echo "▶ Creating web root $WEBROOT ..."
 sudo mkdir -p $WEBROOT
 
-echo "▶ Writing index.php ..."
+# index.php
 sudo tee $WEBROOT/index.php >/dev/null <<'EOPHP'
 <!DOCTYPE html>
 <html>
@@ -45,7 +38,7 @@ sudo tee $WEBROOT/index.php >/dev/null <<'EOPHP'
 body { background: #1a1b1f; color: #f3f3f3; font-family: 'Inter', Arial, sans-serif; display:flex; justify-content:center; align-items:center; min-height:100vh; margin:0; }
 #container { background: #22252b; padding:34px 22px 22px 22px; border-radius: 17px; min-width:340px; box-shadow:0 4px 32px #0008; text-align:center; width:100%; max-width:640px;}
 h2 { color:#00e187; margin-bottom:16px; font-weight:700;}
-input[type=text] { width: 94%; padding: 13px; border-radius: 7px; border: none; margin-bottom:20px; font-size:19px;}
+input[type=text], input[type=file] { width: 94%; padding: 13px; border-radius: 7px; border: none; margin-bottom:20px; font-size:19px;}
 .engine-btn {display:inline-block; background:#222; color:#fff; font-weight:700; border:2px solid #00e187; border-radius:8px; margin:4px 6px 14px 6px; padding:13px 30px; cursor:pointer; font-size:18px; transition:.2s;}
 .engine-btn:hover,.engine-btn.active{background:#00e187;color:#111;}
 button:disabled { background: #444; cursor:wait;}
@@ -68,28 +61,43 @@ button:disabled { background: #444; cursor:wait;}
 <body>
 <div id="container">
     <h2>⚡ Multi-Engine Downloader</h2>
-    <input id="url" type="text" placeholder="Paste any video/photo link (not YouTube)">
-    <br>
-    <div id="engines" style="margin-top:5px; margin-bottom:13px;"></div>
+    <form id="mainform" enctype="multipart/form-data" onsubmit="return false;">
+        <input id="url" type="text" name="url" placeholder="Paste any video/photo link (not YouTube)">
+        <div style="margin-bottom:12px;">
+            <input type="checkbox" id="use_cookie" name="use_cookie" style="width:auto;margin-right:5px;" onchange="cookieFieldToggle()">
+            <label for="use_cookie" style="font-size:15px;">Use cookies.txt?</label>
+            <input type="file" id="cookie_file" name="cookie" style="display:none;">
+        </div>
+        <div id="engines" style="margin-top:5px; margin-bottom:13px;"></div>
+        <button type="submit" id="searchBtn" style="width:99%;padding:10px 0;font-size:18px;background:#00e187;color:#111;border:none;border-radius:7px;font-weight:600;margin-bottom:15px;">Search</button>
+    </form>
     <div id="progress"></div>
     <div class="media-list" id="mediaList"></div>
 </div>
 <script>
-let url = '';
-const engines = [
+let engines = [
     {id:'yt-dlp', name:'yt-dlp', desc:'Ultimate Video Engine'},
     {id:'gallery-dl', name:'gallery-dl', desc:'Album/Photo Pro'},
     {id:'you-get', name:'you-get', desc:'Simple Video Grabber'},
     {id:'manual', name:'Manual', desc:'HTML Scraper'}
 ];
+let selectedEngine = 'yt-dlp';
+
+function cookieFieldToggle(){
+    document.getElementById('cookie_file').style.display =
+        document.getElementById('use_cookie').checked ? 'block':'none';
+}
+
 window.onload = function(){
     let html = '';
     engines.forEach(e=>{
-        html += '<span class="engine-btn" id="ebtn_'+e.id+'" onclick="extractEngine(\''+e.id+'\')">'+e.name+'</span>';
+        html += '<span class="engine-btn'+(e.id==selectedEngine?' active':'')+'" id="ebtn_'+e.id+'" onclick="setEngine(\''+e.id+'\')">'+e.name+'</span>';
     });
     document.getElementById('engines').innerHTML = html;
 };
-function setActive(id){
+
+function setEngine(id){
+    selectedEngine = id;
     engines.forEach(e=>{
         let b = document.getElementById('ebtn_'+e.id);
         if(b) b.classList.remove('active');
@@ -97,19 +105,26 @@ function setActive(id){
     let btn = document.getElementById('ebtn_'+id);
     if(btn) btn.classList.add('active');
 }
-function extractEngine(engine){
-    setActive(engine);
-    url = document.getElementById('url').value.trim();
+
+document.getElementById('mainform').onsubmit = function(e){
+    let url = document.getElementById('url').value.trim();
+    let cookieInput = document.getElementById('cookie_file');
+    let useCookie = document.getElementById('use_cookie').checked;
     if(!url) {
         document.getElementById('progress').innerText = 'Please enter a URL.';
-        return;
+        return false;
     }
-    document.getElementById('progress').innerText = 'Processing with '+engine+'...';
+    document.getElementById('progress').innerText = 'Processing...';
     document.getElementById('mediaList').innerHTML = '';
+    let formData = new FormData();
+    formData.append('url', url);
+    formData.append('engine', selectedEngine);
+    if(useCookie && cookieInput.files.length){
+        formData.append('cookie', cookieInput.files[0]);
+    }
     fetch('extract.php', {
         method: 'POST',
-        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: 'url='+encodeURIComponent(url)+'&engine='+encodeURIComponent(engine)
+        body: formData
     })
     .then(res => res.json())
     .then(data => {
@@ -118,7 +133,7 @@ function extractEngine(engine){
             let html = '';
             data.items.forEach(function(m,i) {
                 html += '<div class="media-item">';
-                html += '<div class="media-header" style="display:flex;align-items:center;">';
+                html += '<div class="media-header">';
                 if(m.thumb){
                     html += '<img src="'+m.thumb+'" />';
                 } else if(m.type==='video' && m.formats && m.formats.length>0){
@@ -154,13 +169,14 @@ function extractEngine(engine){
     }).catch(e=>{
         document.getElementById('progress').innerText = 'Network/Server Error!';
     });
-}
+    return false;
+};
 </script>
 </body>
 </html>
 EOPHP
 
-echo "▶ Writing extract.php ..."
+# extract.php
 sudo tee $WEBROOT/extract.php >/dev/null <<'EOPHP'
 <?php
 function fsize($bytes){
@@ -169,7 +185,6 @@ function fsize($bytes){
     $f = floor(log($bytes,1024));
     return round($bytes/pow(1024,$f),($f>1)?2:0).$sz[$f];
 }
-
 function parse_yt_dlp($data) {
     $items = [];
     if(isset($data['formats']) && is_array($data['formats'])){
@@ -208,7 +223,6 @@ function parse_yt_dlp($data) {
     }
     return $items;
 }
-
 function parse_gallery_dl($data){
     $items = [];
     if(isset($data['files']) && is_array($data['files'])){
@@ -221,7 +235,6 @@ function parse_gallery_dl($data){
     }
     return $items;
 }
-
 function parse_youget($data){
     $items = [];
     if(isset($data['streams']) && is_array($data['streams'])){
@@ -254,7 +267,6 @@ function parse_youget($data){
     }
     return $items;
 }
-
 // fallback: manual html scraper
 function parse_manual($url){
     $items = [];
@@ -278,6 +290,12 @@ function parse_manual($url){
 
 $url = trim($_POST['url'] ?? '');
 $engine = trim($_POST['engine'] ?? 'yt-dlp');
+$cookiefile = null;
+
+if(isset($_FILES['cookie']) && is_uploaded_file($_FILES['cookie']['tmp_name'])){
+    $cookiefile = '/tmp/cookie_'.uniqid().'.txt';
+    move_uploaded_file($_FILES['cookie']['tmp_name'], $cookiefile);
+}
 
 if(!$url || preg_match('#youtube\.com|youtu\.be#i',$url)) {
     echo json_encode(['status'=>'err', 'msg'=>'Sorry! YouTube is not supported.']);
@@ -286,15 +304,27 @@ if(!$url || preg_match('#youtube\.com|youtu\.be#i',$url)) {
 $out = []; $data = null;
 
 if($engine==='yt-dlp'){
-    exec("yt-dlp --no-playlist --dump-json ".escapeshellarg($url)." 2>/dev/null", $out, $ret);
+    $cmd = "yt-dlp --no-playlist --dump-json ";
+    if($cookiefile) $cmd .= " --cookies ".escapeshellarg($cookiefile);
+    $cmd .= " ".escapeshellarg($url)." 2>/dev/null";
+    exec($cmd, $out, $ret);
+    if($cookiefile && file_exists($cookiefile)) unlink($cookiefile);
     $data = @json_decode(is_array($out)?implode("\n",$out):$out,true);
     $items = $data?parse_yt_dlp($data):[];
 } else if($engine==='gallery-dl'){
-    exec("gallery-dl -j ".escapeshellarg($url)." 2>/dev/null", $out, $ret);
+    $cmd = "gallery-dl -j ";
+    if($cookiefile) $cmd .= " --cookies ".escapeshellarg($cookiefile);
+    $cmd .= " ".escapeshellarg($url)." 2>/dev/null";
+    exec($cmd, $out, $ret);
+    if($cookiefile && file_exists($cookiefile)) unlink($cookiefile);
     $data = @json_decode(is_array($out)?implode("\n",$out):$out,true);
     $items = $data?parse_gallery_dl($data):[];
 } else if($engine==='you-get'){
-    exec("you-get --json ".escapeshellarg($url)." 2>/dev/null", $out, $ret);
+    $cmd = "you-get --json ";
+    if($cookiefile) $cmd .= " --cookies ".escapeshellarg($cookiefile);
+    $cmd .= " ".escapeshellarg($url)." 2>/dev/null";
+    exec($cmd, $out, $ret);
+    if($cookiefile && file_exists($cookiefile)) unlink($cookiefile);
     $data = @json_decode(is_array($out)?implode("\n",$out):$out,true);
     $items = $data?parse_youget($data):[];
 } else if($engine==='manual'){
@@ -307,7 +337,7 @@ exit;
 ?>
 EOPHP
 
-echo "▶ Writing download.php ..."
+# download.php
 sudo tee $WEBROOT/download.php >/dev/null <<'EOPHP'
 <?php
 $url = $_GET['u'] ?? '';
@@ -324,7 +354,7 @@ sudo chmod 755 $WEBROOT
 sudo chmod 644 $WEBROOT/*.php
 sudo chmod 1777 /tmp
 
-echo "▶ Creating custom nginx config for port $PORT..."
+# Nginx config
 sudo tee /etc/nginx/sites-available/$NGCONF >/dev/null <<EOF
 server {
     listen $PORT default_server;
@@ -345,11 +375,8 @@ server {
 EOF
 
 sudo ln -sf /etc/nginx/sites-available/$NGCONF /etc/nginx/sites-enabled/$NGCONF
-
-echo "▶ Enabling firewall for port $PORT..."
 sudo ufw allow $PORT/tcp || sudo iptables -I INPUT -p tcp --dport $PORT -j ACCEPT
 
-echo "▶ Restarting nginx/php-fpm..."
 sudo systemctl restart php*-fpm
 sudo systemctl restart nginx
 
